@@ -5,7 +5,10 @@ from typing import Any
 
 import pymupdf
 
-DAY_NAMES = {"Mo": "Monday", "Tu": "Tuesday", "We": "Wednesday", "Th": "Thursday", "Fr": "Friday"}
+DAY_NAMES = {
+    "Mo": "Monday", "Tu": "Tuesday", "We": "Wednesday", "Th": "Thursday",
+    "Fr": "Friday", "Sa": "Saturday", "Su": "Sunday",
+}
 
 
 @dataclass(slots=True)
@@ -50,14 +53,14 @@ class GridDetector:
         return GridGeometry(periods, days, rects)
 
     def _periods(self, words: list[tuple[Any, ...]], page_height: float) -> list[PeriodColumn]:
-        candidates: list[tuple[int, float, float]] = []
+        candidates: list[tuple[int, float, float, float]] = []
         for word in words:
             text = _word_text(word)
             if text.isdigit() and 1 <= int(text) <= 20 and float(word[1]) < 0.25 * page_height:
-                candidates.append((int(text), (float(word[0]) + float(word[2])) / 2, float(word[3])))
+                candidates.append((int(text), (float(word[0]) + float(word[2])) / 2, float(word[3]), (float(word[1]) + float(word[3])) / 2))
         # Select the longest monotonic run of consecutive period numbers.
         candidates.sort(key=lambda item: item[1])
-        run: list[tuple[int, float, float]] = []
+        run: list[tuple[int, float, float, float]] = []
         for item in candidates:
             if not run or item[0] == run[-1][0] + 1:
                 run.append(item)
@@ -69,10 +72,18 @@ class GridDetector:
         gap = sorted(gaps)[len(gaps) // 2]
         columns = [
             PeriodColumn(number, center, center - gap / 2, center + gap / 2)
-            for number, center, _ in run
+            for number, center, _, _ in run
         ]
+        # Large period numbers have tall glyph boxes whose descent can overlap
+        # the time line printed tightly beneath them, so select header words by
+        # their vertical centre rather than requiring them to start below the
+        # number's box.
+        number_middle = min(item[3] for item in run)
         header_bottom = max(item[2] for item in run)
-        header_words = [w for w in words if header_bottom <= float(w[1]) <= header_bottom + 30]
+        header_words = [
+            w for w in words
+            if number_middle < (float(w[1]) + float(w[3])) / 2 <= header_bottom + 30
+        ]
         for column in columns:
             text = " ".join(_word_text(w) for w in header_words if column.left <= (float(w[0]) + float(w[2])) / 2 <= column.right)
             from .time_parser import extract_explicit_time
@@ -85,7 +96,9 @@ class GridDetector:
         labels = []
         for word in words:
             text = _word_text(word)
-            if text in DAY_NAMES:
+            # Day labels sit in the leftmost column; ignoring anything inside the
+            # period columns keeps short cell text from being read as a day.
+            if text in DAY_NAMES and (not periods or float(word[2]) <= periods[0].left):
                 labels.append((text, (float(word[1]) + float(word[3])) / 2))
         labels.sort(key=lambda item: item[1])
         if not labels:
